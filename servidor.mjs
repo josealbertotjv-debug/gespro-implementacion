@@ -51,6 +51,8 @@ const VENTANA_MS = 15 * 60 * 1000;
 const MAX_INTENTOS = 25;
 
 function ipCliente(req) {
+  const realIp = req.headers['x-real-ip'];
+  if (typeof realIp === 'string' && realIp.trim()) return realIp.trim();
   const cf = req.headers['cf-connecting-ip'];
   if (typeof cf === 'string' && cf.trim()) return cf.trim();
   const xff = req.headers['x-forwarded-for'];
@@ -612,6 +614,7 @@ async function sincronizarGesPro(req, res) {
         ok: true,
         origen: base,
         usuario: authResp.data?.usuario?.nombre || authResp.data?.usuario?.usuario || usuario,
+        esSuperadmin: !!authResp.data?.usuario?.superadmin,
         totalEmpresas: empresasProcesadas.length,
         empresas: empresasProcesadas,
       });

@@ -21,6 +21,7 @@ const state = {
   exclusivoCliente: false, // true cuando se abre un enlace privado #cliente=...
   accesoUsuarios: false,   // true cuando se abre /?acceso=1 (portal de acceso para usuarios de GesPro)
   autenticadoPortal: false,
+  esSuperadminPortal: false,
   servidorVivo: false,
   esLocal: false,
   faseSeleccionadaResumen: null,
@@ -428,7 +429,7 @@ function svgActivityChart(semanas, seriesActivas, chartId) {
 function renderChrome() {
   const emp = empresaActual();
   const enPuertaAcceso = state.accesoUsuarios && !state.autenticadoPortal;
-  const soloLecturaCliente = state.exclusivoCliente || state.accesoUsuarios;
+  const soloLecturaCliente = state.exclusivoCliente || (state.accesoUsuarios && !state.esSuperadminPortal);
 
   const picker = document.getElementById('companyPickerWrap');
   const modeSwitch = document.querySelector('.mode-switch');
@@ -453,7 +454,7 @@ function renderChrome() {
   if (btnPrint) btnPrint.style.display = '';
   if (picker) picker.style.display = (state.exclusivoCliente || state.data.empresas.length <= 1) ? 'none' : '';
   if (modeSwitch) modeSwitch.style.display = soloLecturaCliente ? 'none' : '';
-  if (btnShare) btnShare.style.display = state.exclusivoCliente ? 'none' : '';
+  if (btnShare) btnShare.style.display = (state.exclusivoCliente || (state.accesoUsuarios && !state.esSuperadminPortal)) ? 'none' : '';
   if (btnConnectTop) {
     btnConnectTop.style.display = state.exclusivoCliente ? 'none' : (state.servidorVivo ? '' : 'none');
   }
@@ -660,8 +661,9 @@ function bindPortalAccesoEvents() {
       };
       state.empresaId = lista[0].id;
       state.autenticadoPortal = true;
+      state.esSuperadminPortal = !!json.esSuperadmin;
       state.modo = 'cliente';
-      state.tab = 'resumen';
+      state.tab = lista.length > 1 ? 'portafolio' : 'resumen';
       state.faseSeleccionadaResumen = null;
       render();
       toast(`✓ Datos en vivo cargados para ${lista.length} empresa(s)`);
@@ -1330,7 +1332,7 @@ function renderSalud(emp, m) {
             <h2>Bloqueos, Riesgos y Acuerdos</h2>
             <p>Seguimiento transparente de pendientes tanto del cliente como del equipo GesPro.</p>
           </div>
-          ${(!state.exclusivoCliente && !state.accesoUsuarios) ? `<button type="button" class="btn sm primary" data-action="nuevo-bloqueo">+ Registrar bloqueo</button>` : ''}
+          ${(!state.exclusivoCliente && (!state.accesoUsuarios || state.esSuperadminPortal)) ? `<button type="button" class="btn sm primary" data-action="nuevo-bloqueo">+ Registrar bloqueo</button>` : ''}
         </div>
 
         <div class="filter-bar">
@@ -1354,7 +1356,7 @@ function renderSalud(emp, m) {
                   <span class="pill neutral">Fecha límite: ${fmtFecha(b.fechaLimite)}</span>
                 </div>
               </div>
-              ${(!state.exclusivoCliente && !state.accesoUsuarios) ? `
+              ${(!state.exclusivoCliente && (!state.accesoUsuarios || state.esSuperadminPortal)) ? `
               <button type="button" class="btn sm ${b.resuelto ? '' : 'ok'}" data-toggle-bloq="${b.id}">
                 ${b.resuelto ? '↺ Reabrir' : '✓ Marcar resuelto'}
               </button>` : ''}
@@ -1369,7 +1371,7 @@ function renderSalud(emp, m) {
             <h2>Bitácora de Seguimiento</h2>
             <p>Hitos, sesiones de entrenamiento y revisiones ejecutivas.</p>
           </div>
-          ${(!state.exclusivoCliente && !state.accesoUsuarios) ? `<button type="button" class="btn sm" data-action="nueva-nota">+ Agregar nota</button>` : ''}
+          ${(!state.exclusivoCliente && (!state.accesoUsuarios || state.esSuperadminPortal)) ? `<button type="button" class="btn sm" data-action="nueva-nota">+ Agregar nota</button>` : ''}
         </div>
 
         <div class="timeline">
@@ -1585,7 +1587,7 @@ function abrirModalModulo(emp, modId) {
 
   const pie = isCons
     ? `<button type="button" class="btn" id="mCancel">Cancelar</button><button type="button" class="btn primary" id="mSaveMod">Guardar cambios</button>`
-    : `${(!state.exclusivoCliente && !state.accesoUsuarios) ? `<button type="button" class="btn" id="mSwitchCons">⚙ Editar en Modo Consultor</button>` : ''}<button type="button" class="btn primary" id="mCancel">Cerrar</button>`;
+    : `${(!state.exclusivoCliente && (!state.accesoUsuarios || state.esSuperadminPortal)) ? `<button type="button" class="btn" id="mSwitchCons">⚙ Editar en Modo Consultor</button>` : ''}<button type="button" class="btn primary" id="mCancel">Cerrar</button>`;
 
   abrirModal({ titulo: `${meta.icono} ${meta.nombre}`, subtitulo: emp.nombre, cuerpo, pie });
 
@@ -2501,7 +2503,7 @@ async function init() {
 
   document.querySelectorAll('.mode-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
-      if (state.exclusivoCliente || state.accesoUsuarios) return;
+      if (state.exclusivoCliente || (state.accesoUsuarios && !state.esSuperadminPortal)) return;
       state.modo = btn.dataset.mode;
       render();
       toast(state.modo === 'consultor' ? 'Modo Consultor activado (edición habilitada)' : 'Vista Cliente activada (presentación limpia)');
