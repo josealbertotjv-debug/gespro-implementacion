@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GesPro Pulse · Seguimiento de Implementación y Uso</title>
+  <meta name="description" content="Portal interactivo de seguimiento de implementación, adopción y estado de uso de GesPro Administrativo por empresa.">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/estilos.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-in">
+      <div class="brand-wrap">
+        <a href="#resumen" class="brand" id="btnHome" title="Volver al resumen ejecutivo">
+          <div class="brand-mark">
+            <span>GP</span>
+            <i class="pulse-dot" aria-hidden="true"></i>
+          </div>
+          <div class="brand-txt">
+            <strong>GesPro <em>Pulse</em></strong>
+            <span>Implementación &amp; Estado de Uso</span>
+          </div>
+        </a>
+
+        <div class="company-picker" id="companyPickerWrap">
+          <label for="companySelect" class="sr-only">Seleccionar empresa</label>
+          <span class="picker-ico" aria-hidden="true">🏢</span>
+          <select id="companySelect" aria-label="Empresa seleccionada"></select>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <div class="mode-switch" role="group" aria-label="Modo de visualización">
+          <button type="button" class="mode-btn active" data-mode="cliente" title="Vista limpia y ejecutiva para presentar o compartir con el cliente">
+            <span aria-hidden="true">👁</span> Vista Cliente
+          </button>
+          <button type="button" class="mode-btn" data-mode="consultor" title="Modo edición para actualizar avances, bloqueos y métricas">
+            <span aria-hidden="true">⚙</span> Consultor
+          </button>
+        </div>
+
+        <button type="button" class="icon-btn accent" id="btnConnectTop" title="Conectar con GesPro Administrativo para cargar tus empresas reales">
+          <span aria-hidden="true">🔌</span><span class="btn-lbl" id="btnConnectTopLbl">Conectar GesPro</span>
+        </button>
+
+        <button type="button" class="icon-btn" id="btnShare" title="Compartir enlace de vista cliente o exportar datos">
+          <span aria-hidden="true">↗</span><span class="btn-lbl">Compartir</span>
+        </button>
+
+        <button type="button" class="icon-btn" id="btnPrint" title="Imprimir o guardar reporte ejecutivo en PDF">
+          <span aria-hidden="true">⎙</span><span class="btn-lbl">Reporte PDF</span>
+        </button>
+
+        <button type="button" class="icon-btn only-ico" id="btnTheme" title="Cambiar entre tema claro y oscuro" aria-label="Cambiar tema">
+          <span id="themeIcon" aria-hidden="true">🌙</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <nav class="subnav" aria-label="Secciones del panel">
+    <div class="subnav-in">
+      <div class="tabs" id="mainTabs" role="tablist"></div>
+      <div class="subnav-meta" id="subnavMeta"></div>
+    </div>
+  </nav>
+
+  <main id="app" class="main-shell" aria-live="polite"></main>
+
+  <footer class="app-footer">
+    <div class="footer-in">
+      <div>
+        <strong>GesPro Administrativo · Portal de Implementación y Adopción</strong>
+        <span class="sep">·</span>
+        <span>J@RTechnologies</span>
+      </div>
+      <div class="footer-links">
+        <button type="button" class="link-btn" id="btnConnectLive">🔌 Conectar servidor GesPro</button>
+        <span class="sep">·</span>
+        <button type="button" class="link-btn" id="btnExportJson">⬇ Exportar JSON</button>
+        <span class="sep">·</span>
+        <button type="button" class="link-btn" id="btnImportJson">⬆ Importar JSON</button>
+        <span class="sep">·</span>
+        <button type="button" class="link-btn" id="btnResetDemo">↺ Restaurar demo</button>
+        <input type="file" id="jsonFileInput" accept=".json,application/json" hidden>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Modal genérico -->
+  <div class="modal-backdrop" id="modalBackdrop" role="dialog" aria-modal="true" aria-labelledby="modalTitle" hidden>
+    <div class="modal-card" id="modalCard">
+      <div class="modal-head">
+        <div>
+          <h3 id="modalTitle"></h3>
+          <p id="modalSub"></p>
+        </div>
+        <button type="button" class="modal-close" id="modalClose" aria-label="Cerrar ventana">×</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-foot" id="modalFoot"></div>
+    </div>
+  </div>
+
+  <!-- Toast de notificaciones -->
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="js/datos.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
