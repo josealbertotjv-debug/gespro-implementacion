@@ -11,7 +11,7 @@ const THEME_KEY = 'gespro_pulse_tema_v1';
 const SERVER_URL_KEY = 'gespro_pulse_server_url_v1';
 const PUBLIC_BASE_URL_KEY = 'gespro_pulse_public_base_v1';
 const DEFAULT_GESPRO_URL = 'https://gespro-administrativo.gespro.ai';
-const DEFAULT_PUBLIC_BASE = 'https://josealbertotjv-debug.github.io/gespro-implementacion/';
+const DEFAULT_PUBLIC_BASE = 'https://implementacion.gespro.ai/';
 
 const state = {
   data: cargarDatos(),
@@ -1933,8 +1933,10 @@ function abrirModalEditarEmpresa(emp) {
 
 async function abrirModalCompartir(emp) {
   const esHostLocal = /^(127\.0\.0\.1|localhost)$/i.test(window.location.hostname) || window.location.protocol === 'file:';
+  const guardada = localStorage.getItem(PUBLIC_BASE_URL_KEY) || '';
+  const baseGuardadaLimpia = guardada && !/github\.io/i.test(guardada) ? guardada : DEFAULT_PUBLIC_BASE;
   const basePublica = esHostLocal
-    ? (localStorage.getItem(PUBLIC_BASE_URL_KEY) || DEFAULT_PUBLIC_BASE)
+    ? baseGuardadaLimpia
     : `${window.location.origin}${window.location.pathname}`;
   const baseLimpia = basePublica.replace(/\/+$/, '') + '/';
 

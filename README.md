@@ -1,5 +1,7 @@
 # GesPro Pulse · Portal de Implementación y Estado de Uso
 
+- **Portal oficial en línea:** https://implementacion.gespro.ai/
+
 Aplicación web interactiva y profesional para dar visibilidad a cada cliente de **GesPro Administrativo** sobre:
 
 1. **Cómo avanza su implementación** (flujo visual de 6 fases, cronograma Gantt de 8 semanas, entregables, responsables Cliente vs GesPro y bloqueos).
