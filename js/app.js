@@ -69,6 +69,29 @@ function ahoraTexto() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+async function leerJsonSeguro(res) {
+  const texto = await res.text();
+  try {
+    return texto ? JSON.parse(texto) : {};
+  } catch {
+    if (res.status === 405 || res.status === 404) {
+      throw new Error('Este portal está en modo estático (GitHub Pages) y no dispone del conector en vivo. Abre tu panel local (http://127.0.0.1:4355) o el enlace en vivo para sincronizar con GesPro.');
+    }
+    throw new Error(`El servidor respondió con un formato inesperado (HTTP ${res.status}). Inténtalo de nuevo en unos segundos.`);
+  }
+}
+
+function mensajeErrorRed(err) {
+  const m = String(err?.message || err || '');
+  if (/load failed|failed to fetch|networkerror|abort/i.test(m)) {
+    return 'No se pudo establecer conexión con el servidor. Verifica tu conexión a internet o que el servidor local/túnel esté encendido.';
+  }
+  if (/did not match the expected pattern|unexpected token|json/i.test(m)) {
+    return 'El servidor devolvió una respuesta no válida para sincronización en vivo. Asegúrate de estar conectado al servidor Node de GesPro Pulse y no a la versión estática.';
+  }
+  return m || 'Ocurrió un error al conectar con GesPro.';
+}
+
 function cargarDatos() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -434,6 +457,12 @@ function renderChrome() {
   if (btnConnectTop) {
     btnConnectTop.style.display = state.exclusivoCliente ? 'none' : (state.servidorVivo ? '' : 'none');
   }
+  const btnConnectFooter = document.getElementById('btnConnectLive');
+  if (btnConnectFooter) {
+    btnConnectFooter.style.display = state.servidorVivo ? '' : 'none';
+    const nextSep = btnConnectFooter.nextElementSibling;
+    if (nextSep?.classList.contains('sep')) nextSep.style.display = state.servidorVivo ? '' : 'none';
+  }
   if (footerLinks) footerLinks.style.display = soloLecturaCliente ? 'none' : '';
 
   if (!emp) return;
@@ -602,7 +631,7 @@ function bindPortalAccesoEvents() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const json = await res.json();
+      const json = await leerJsonSeguro(res);
       if (!res.ok) throw new Error(json.error || `Error ${res.status}`);
 
       if (json.requiere_2fa) {
@@ -637,7 +666,7 @@ function bindPortalAccesoEvents() {
       render();
       toast(`✓ Datos en vivo cargados para ${lista.length} empresa(s)`);
     } catch (err) {
-      msg.innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`;
+      msg.innerHTML = `<span style="color:var(--danger)">${esc(mensajeErrorRed(err))}</span>`;
       btn.disabled = false;
       btn.textContent = tokenParcial ? '✓ Verificar y continuar' : 'Entrar y ver estado en vivo →';
     }
@@ -2106,7 +2135,7 @@ function abrirModalConectarServidor() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const json = await res.json();
+      const json = await leerJsonSeguro(res);
       if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
 
       if (json.requiere_2fa) {
@@ -2180,7 +2209,7 @@ function abrirModalConectarServidor() {
       render();
       toast(`✓ ${nuevasLista.length} empresa(s) real(es) cargadas desde ${new URL(json.origen || url).hostname}`);
     } catch (err) {
-      msg.innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`;
+      msg.innerHTML = `<span style="color:var(--danger)">${esc(mensajeErrorRed(err))}</span>`;
       btn.disabled = false;
       btn.textContent = tokenParcial2fa ? '✓ Verificar y cargar empresas' : '🔌 Conectar y cargar empresas reales';
     }
