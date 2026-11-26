@@ -13,6 +13,7 @@
    ===================================================================== */
 
 import { createServer } from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,6 +45,68 @@ const SEC_HEADERS = {
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'no-referrer',
 };
+
+/* Sesiones efímeras en RAM (sólo para superadmin) que permiten configurar y disparar el agente GP Mensajes
+   sin guardar contraseñas ni tokens en disco. Caducan solas a los 30 minutos y cierran sesión en GesPro. */
+const COOKIE_SID = 'gp_pulse_sid';
+const TTL_SESION_MS = 30 * 60 * 1000;
+const superSesiones = new Map();
+
+function leerCookie(req, nombre) {
+  const raw = String(req.headers.cookie || '');
+  for (const parte of raw.split(';')) {
+    const i = parte.indexOf('=');
+    if (i > 0 && parte.slice(0, i).trim() === nombre) return parte.slice(i + 1).trim();
+  }
+  return null;
+}
+
+function esHttpsReq(req) {
+  return req.headers['x-forwarded-proto'] === 'https';
+}
+
+function guardarSuperSesion(req, res, { base, authHeaders, usuario }) {
+  // Purga sesiones vencidas
+  const ahora = Date.now();
+  for (const [k, s] of superSesiones) {
+    if (s.expira <= ahora) {
+      superSesiones.delete(k);
+      apiPost(s.base, '/api/logout', {}, s.authHeaders).catch(() => {});
+    }
+  }
+  const sid = randomBytes(24).toString('base64url');
+  superSesiones.set(sid, { base, authHeaders, usuario, expira: ahora + TTL_SESION_MS });
+  const cookie = `${COOKIE_SID}=${sid}; Path=/api/gp-mensajes; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(TTL_SESION_MS / 1000)}${esHttpsReq(req) ? '; Secure' : ''}`;
+  res.setHeader('Set-Cookie', cookie);
+}
+
+function obtenerSuperSesion(req) {
+  const sid = leerCookie(req, COOKIE_SID);
+  if (!sid) return null;
+  const s = superSesiones.get(sid);
+  if (!s) return null;
+  if (s.expira <= Date.now()) {
+    superSesiones.delete(sid);
+    apiPost(s.base, '/api/logout', {}, s.authHeaders).catch(() => {});
+    return null;
+  }
+  s.expira = Date.now() + TTL_SESION_MS;
+  return { sid, ...s };
+}
+
+async function apiPut(base, path, body, headers) {
+  try {
+    const r = await fetch(`${base}${path}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json().catch(() => null);
+    return { ok: r.ok, status: r.status, data };
+  } catch (err) {
+    return { ok: false, status: 502, data: { error: err.message } };
+  }
+}
 
 /* Limitador ligero de tasa por IP para proteger /api/sincronizar-gespro */
 const intentosPorIp = new Map();
@@ -543,6 +606,9 @@ async function sincronizarGesPro(req, res) {
 
     const latenciaMs = Math.max(1, Date.now() - t0);
 
+    const esSuperadmin = !!authResp.data?.usuario?.superadmin;
+    let mantenerSesionSuper = false;
+
     try {
       const [empresasRaw, puenteSeniat, plataformaUsuarios] = await Promise.all([
         apiGet(base, '/api/empresas?resumen=1', authHeaders),
@@ -610,20 +676,94 @@ async function sincronizarGesPro(req, res) {
         }));
       }
 
+      if (esSuperadmin) {
+        mantenerSesionSuper = true;
+        guardarSuperSesion(req, res, {
+          base,
+          authHeaders,
+          usuario: authResp.data?.usuario?.nombre || authResp.data?.usuario?.usuario || usuario,
+        });
+      }
+
       return enviarJson(res, 200, {
         ok: true,
         origen: base,
         usuario: authResp.data?.usuario?.nombre || authResp.data?.usuario?.usuario || usuario,
-        esSuperadmin: !!authResp.data?.usuario?.superadmin,
+        esSuperadmin,
         totalEmpresas: empresasProcesadas.length,
         empresas: empresasProcesadas,
       });
     } finally {
-      await apiPost(base, '/api/logout', {}, authHeaders).catch(() => {});
+      if (!mantenerSesionSuper) {
+        await apiPost(base, '/api/logout', {}, authHeaders).catch(() => {});
+      }
     }
   } catch (err) {
     return enviarJson(res, 502, { error: err.message || 'Error conectando con GesPro' });
   }
+}
+
+async function gpMensajesConfigGet(req, res) {
+  const ses = obtenerSuperSesion(req);
+  if (!ses) return enviarJson(res, 401, { error: 'Inicia sesión como superadministrador para configurar los reportes de GP Mensajes.' });
+  const [lista, bitacora] = await Promise.all([
+    apiGet(ses.base, '/api/config/agentes', ses.authHeaders),
+    apiGet(ses.base, '/api/config/agentes/bitacora?agente=implementacion&limite=20', ses.authHeaders),
+  ]);
+  if (!lista?.agentes) {
+    return enviarJson(res, 401, { error: 'Tu sesión en GesPro expiró. Vuelve a conectar con «Actualizar en vivo».' });
+  }
+  const agente = lista.agentes.find((a) => a.clave === 'implementacion') || null;
+  if (!agente) {
+    const usuarios = await apiGet(ses.base, '/api/plataforma/usuarios', ses.authHeaders);
+    return enviarJson(res, 200, {
+      disponible: false,
+      versionPendiente: true,
+      horas_servidor: lista.horas_servidor,
+      zona_servidor: lista.zona_servidor,
+      auxiliares_disponibles: Array.isArray(usuarios)
+        ? usuarios.filter((u) => Number(u.activo) !== 0).map((u) => ({
+            id: Number(u.id), usuario: u.usuario, nombre: u.nombre || u.usuario, email: u.email || null,
+            superadmin: !!Number(u.superadmin), con_app: false, con_avisos: false,
+          }))
+        : [],
+      bitacora: [],
+    });
+  }
+  return enviarJson(res, 200, {
+    disponible: true,
+    agente,
+    app: lista.app || null,
+    horas_servidor: lista.horas_servidor,
+    zona_servidor: lista.zona_servidor,
+    bitacora: Array.isArray(bitacora) ? bitacora : [],
+  });
+}
+
+async function gpMensajesConfigPut(req, res) {
+  const ses = obtenerSuperSesion(req);
+  if (!ses) return enviarJson(res, 401, { error: 'Inicia sesión como superadministrador para guardar esta configuración.' });
+  const body = await leerCuerpoJson(req);
+  const r = await apiPut(ses.base, '/api/config/agentes', {
+    clave: 'implementacion',
+    activo: !!body.activo,
+    solo_habiles: !!body.solo_habiles,
+    horas: '',
+    destinatarios: { auxiliares: Array.isArray(body.correos_extra) ? body.correos_extra : [] },
+    opciones: body.opciones || {},
+  }, ses.authHeaders);
+  if (!r.ok) return enviarJson(res, r.status || 400, { error: r.data?.error || 'No se pudo guardar en GesPro' });
+  return enviarJson(res, 200, { ok: true, agente: r.data });
+}
+
+async function gpMensajesEnviar(req, res) {
+  const ses = obtenerSuperSesion(req);
+  if (!ses) return enviarJson(res, 401, { error: 'Inicia sesión como superadministrador para enviar reportes.' });
+  const body = await leerCuerpoJson(req);
+  const tipo = body.tipo === 'SEMANAL' ? 'SEMANAL' : 'DIARIO';
+  const r = await apiPost(ses.base, '/api/config/agentes/ejecutar', { clave: 'implementacion', tipo }, ses.authHeaders);
+  if (!r.ok) return enviarJson(res, r.status || 400, { error: r.data?.error || 'No se pudo enviar el reporte a GP Mensajes' });
+  return enviarJson(res, 200, r.data);
 }
 
 const server = createServer(async (req, res) => {
@@ -639,6 +779,18 @@ const server = createServer(async (req, res) => {
 
   if (reqUrl.pathname === '/api/sincronizar-gespro' && req.method === 'POST') {
     return sincronizarGesPro(req, res);
+  }
+
+  if (reqUrl.pathname === '/api/gp-mensajes/config' && req.method === 'GET') {
+    return gpMensajesConfigGet(req, res);
+  }
+
+  if (reqUrl.pathname === '/api/gp-mensajes/config' && req.method === 'PUT') {
+    return gpMensajesConfigPut(req, res);
+  }
+
+  if (reqUrl.pathname === '/api/gp-mensajes/enviar' && req.method === 'POST') {
+    return gpMensajesEnviar(req, res);
   }
 
   let relPath = decodeURIComponent(reqUrl.pathname);

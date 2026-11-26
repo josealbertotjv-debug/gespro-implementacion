@@ -32,6 +32,19 @@ const state = {
   busquedaPortafolio: '',
   filtroPortafolio: 'todas',
   seriesActivas: { facturas: true, cobrosPagos: true, inventario: true, asientos: false },
+  gpMensajes: {
+    cargado: false,
+    cargando: false,
+    disponible: false,
+    versionPendiente: false,
+    error: null,
+    agente: null,
+    auxiliares_disponibles: [],
+    bitacora: [],
+    horas_servidor: null,
+    zona_servidor: null,
+    vistaPreviaTipo: 'DIARIO',
+  },
 };
 
 /* ---------------- Utilidades ---------------- */
@@ -493,6 +506,13 @@ function renderChrome() {
   } else if (state.tab === 'portafolio') {
     state.tab = 'resumen';
   }
+  const puedeGpMensajes = !state.exclusivoCliente && (!state.accesoUsuarios || state.esSuperadminPortal);
+  if (puedeGpMensajes) {
+    const activo = state.gpMensajes.agente?.activo;
+    tabs.push({ id: 'gpmensajes', ico: '🔔', label: 'GP Mensajes', cnt: activo ? 'ON' : undefined });
+  } else if (state.tab === 'gpmensajes') {
+    state.tab = 'resumen';
+  }
 
   document.getElementById('mainTabs').innerHTML = tabs.map((t) => `
     <button type="button" role="tab" aria-selected="${state.tab === t.id}" class="tab ${state.tab === t.id ? 'active' : ''}" data-tab="${t.id}">
@@ -662,6 +682,7 @@ function bindPortalAccesoEvents() {
       state.empresaId = lista[0].id;
       state.autenticadoPortal = true;
       state.esSuperadminPortal = !!json.esSuperadmin;
+      state.gpMensajes.cargado = false;
       state.modo = 'cliente';
       state.tab = lista.length > 1 ? 'portafolio' : 'resumen';
       state.faseSeleccionadaResumen = null;
@@ -2203,6 +2224,8 @@ function abrirModalConectarServidor() {
 
       state.data.empresas = nuevasLista;
       state.data.fuenteReal = json.origen || url;
+      state.esSuperadminPortal = !!json.esSuperadmin;
+      state.gpMensajes.cargado = false;
       state.empresaId = nuevasLista[0].id;
       state.faseSeleccionadaResumen = null;
       state.tab = 'portafolio';
@@ -2263,6 +2286,351 @@ function bindChartTooltips(emp) {
   });
 }
 
+/* ---------------- VISTA 6: REPORTES AUTOMÁTICOS EN GP MENSAJES ---------------- */
+const DIAS_SEM_NOMBRE = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+
+async function cargarConfigGpMensajes(forzar = false) {
+  if (!state.servidorVivo) return;
+  if (state.gpMensajes.cargando || (state.gpMensajes.cargado && !forzar)) return;
+  state.gpMensajes.cargando = true;
+  state.gpMensajes.error = null;
+  render();
+  try {
+    const res = await fetch('/api/gp-mensajes/config', { cache: 'no-store' });
+    const json = await leerJsonSeguro(res);
+    if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+    state.gpMensajes.cargado = true;
+    state.gpMensajes.disponible = !!json.disponible;
+    state.gpMensajes.versionPendiente = !!json.versionPendiente;
+    state.gpMensajes.agente = json.agente || null;
+    state.gpMensajes.auxiliares_disponibles = json.agente?.auxiliares_disponibles || json.auxiliares_disponibles || [];
+    state.gpMensajes.bitacora = json.bitacora || [];
+    state.gpMensajes.horas_servidor = json.horas_servidor || null;
+    state.gpMensajes.zona_servidor = json.zona_servidor || null;
+  } catch (err) {
+    state.gpMensajes.cargado = true;
+    state.gpMensajes.error = mensajeErrorRed(err);
+  } finally {
+    state.gpMensajes.cargando = false;
+    render();
+  }
+}
+
+function construirVistaPreviaGp(tipo) {
+  const esSemanal = tipo === 'SEMANAL';
+  const todas = state.data.empresas.map((e) => ({ emp: e, m: calcEmpresa(e) }));
+  const total = todas.length;
+  const promImpl = total ? Math.round(todas.reduce((a, x) => a + x.m.avanceImpl, 0) / total) : 0;
+  const alertas = todas.filter((x) => x.m.estadoGeneral.clase === 'danger');
+  const totalDocs = todas.reduce((a, x) => a + x.m.docs30d, 0);
+  const hoy = new Date().toISOString().slice(0, 10);
+
+  const asunto = esSemanal
+    ? `Reporte semanal de implementación y uso · ${hoy} (${promImpl}% avance · ${fmtNum(totalDocs)} ops)`
+    : `Reporte diario de implementación y uso · ${hoy} (${total - alertas.length}/${total} saludables)`;
+
+  const lineas = [
+    esSemanal ? `📊 REPORTE SEMANAL DE IMPLEMENTACIÓN Y USO (${hoy})` : `📊 REPORTE DIARIO DE IMPLEMENTACIÓN Y USO (${hoy})`,
+    `Empresas: ${total} · Avance prom.: ${promImpl}% · Ops. recientes: ${fmtNum(totalDocs)} · Alertas: ${alertas.length}`,
+    '',
+    ...todas.map(({ emp, m }) => `• ${emp.nombre} (${emp.codigo}): ${m.avanceImpl}% impl. | Uso ${m.indiceUso}% | ${m.usuariosActivos}/${m.usuariosTotal} usuarios | ${m.estadoGeneral.texto}`),
+    '',
+    alertas.length
+      ? `⚠ Atención prioritaria: ${alertas.map((x) => x.emp.nombre).join(', ')}`
+      : '✅ Sin alertas críticas de inactividad en las empresas activas.',
+    `🔗 Abrir tablero completo: https://implementacion.gespro.ai`,
+  ];
+  return { asunto, texto: lineas.join('\n') };
+}
+
+function renderGpMensajes() {
+  const gp = state.gpMensajes;
+  const ag = gp.agente;
+  const o = ag?.opciones || {
+    diario_activo: true, diario_hora: '08:00', semanal_activo: true, semanal_dia: 1, semanal_hora: '07:30',
+    incluir_superadmins: true, auxiliares: [], dias_alerta_inactiva: 5, url_portal: 'https://implementacion.gespro.ai',
+  };
+  const auxSet = new Set(o.auxiliares || []);
+  const disp = gp.auxiliares_disponibles || [];
+  const supers = disp.filter((u) => u.superadmin);
+  const auxiliares = disp.filter((u) => !u.superadmin);
+  const preview = construirVistaPreviaGp(gp.vistaPreviaTipo);
+  const deshabilitado = !gp.disponible;
+
+  const avisoEstado = gp.cargando
+    ? `<div class="consultor-ribbon">⏳ Consultando configuración de GP Mensajes en tu servidor GesPro…</div>`
+    : gp.error
+      ? `<div class="demo-banner"><div><strong>Conexión requerida</strong> · ${esc(gp.error)}</div><button type="button" class="btn sm ok" data-action="conectar-gespro">🔌 Conectar como superadmin</button></div>`
+      : gp.versionPendiente
+        ? `<div class="demo-banner"><div><strong>Actualización v5.11.0 lista para desplegar en el ERP</strong> · Tu servidor en producción aún está en v5.10.3 y todavía no incluye el agente nativo <code>implementacion</code>. En cuanto despliegues la versión v5.11.0, este panel guardará el horario diario/semanal y enviará avisos Push reales a GP Mensajes automáticamente.</div><button type="button" class="btn sm" id="btnRecargarGp">↻ Reintentar</button></div>`
+        : !state.servidorVivo
+          ? `<div class="demo-banner"><div><strong>Modo estático</strong> · Para programar y enviar reportes a GP Mensajes, abre <strong>https://implementacion.gespro.ai</strong> e inicia sesión como superadministrador.</div></div>`
+          : '';
+
+  return `
+    ${avisoEstado}
+
+    <section class="exec-hero" style="margin-bottom:20px">
+      <div>
+        <div class="hero-kicker">
+          <span class="code-tag">GP MENSAJES</span>
+          <span>REPORTES AUTOMÁTICOS DE PLATAFORMA</span>
+        </div>
+        <h1>Reportes diarios y semanales en GP Mensajes</h1>
+        <p style="margin:6px 0 0;color:#cde1f7;font-size:14.5px;max-width:650px">
+          Envía automáticamente al buzón y teléfono (notificación Push) del <strong>superadministrador</strong> y tus <strong>auxiliares</strong> el resumen de avance de implementación, uso real por empresa y alertas de inactividad.
+        </p>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px;align-items:stretch">
+        <div style="background:rgba(7,19,36,.48);border:1px solid rgba(137,201,255,.24);border-radius:14px;padding:14px 16px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">
+            <span style="font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#9fc4eb;font-weight:700">Estado del agente</span>
+            <span class="pill ${ag?.activo ? 'ok' : 'neutral'}">${gp.disponible ? (ag?.activo ? '● Encendido' : 'Apagado') : 'Pendiente v5.11'}</span>
+          </div>
+          <div style="font-size:12.5px;color:#d6e8fb">
+            ${gp.horas_servidor ? `Hora del servidor: <strong>${esc(gp.horas_servidor)}</strong> (${esc(gp.zona_servidor || 'servidor')})` : 'Conectado vía GesPro Administrativo'}
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" class="btn sky sm" style="flex:1" id="btnEnviarDiarioGp" ${deshabilitado ? 'disabled' : ''}>📨 Enviar Diario ahora</button>
+          <button type="button" class="btn ghost-dark sm" style="flex:1" id="btnEnviarSemanalGp" ${deshabilitado ? 'disabled' : ''}>📅 Enviar Semanal ahora</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid-2">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h2>Programación y Destinatarios</h2>
+            <p>Elige horarios para el reporte diario y semanal, y marca qué auxiliares reciben el aviso en GP Mensajes.</p>
+          </div>
+          ${state.servidorVivo ? `<button type="button" class="btn xs" id="btnRecargarGp2">↻ Actualizar</button>` : ''}
+        </div>
+
+        <form id="formGpMensajes" style="display:flex;flex-direction:column;gap:14px">
+          <label style="display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:11px;background:var(--surface-2);border:1px solid var(--line);cursor:pointer">
+            <input type="checkbox" id="gpActivo" ${ag?.activo ? 'checked' : ''} ${deshabilitado ? 'disabled' : ''}>
+            <div>
+              <strong style="display:block;font-size:14px">Activar envíos automáticos en GP Mensajes</strong>
+              <span style="font-size:12px;color:var(--muted)">Si está apagado no dispara solo, pero puedes enviar manualmente en cualquier momento.</span>
+            </div>
+          </label>
+
+          <div style="padding:13px 14px;border-radius:12px;background:var(--surface-2);border:1px solid var(--line);display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+              <label style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:13.5px;cursor:pointer">
+                <input type="checkbox" id="gpDiarioActivo" ${o.diario_activo !== false ? 'checked' : ''} ${deshabilitado ? 'disabled' : ''}>
+                <span>☀️ Reporte Diario</span>
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-2);cursor:pointer">
+                <input type="checkbox" id="gpSoloHabiles" ${ag?.solo_habiles ? 'checked' : ''} ${deshabilitado ? 'disabled' : ''}>
+                <span>Sólo lunes a viernes</span>
+              </label>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="gpDiarioHora">Hora del reporte diario</label>
+                <input type="time" id="gpDiarioHora" value="${esc(o.diario_hora || '08:00')}" ${deshabilitado ? 'disabled' : ''}>
+              </div>
+              <div class="field">
+                <label for="gpDiasInact">Alerta si pasa sin uso (días)</label>
+                <input type="number" id="gpDiasInact" min="1" max="60" value="${Number(o.dias_alerta_inactiva ?? 5)}" ${deshabilitado ? 'disabled' : ''}>
+              </div>
+            </div>
+          </div>
+
+          <div style="padding:13px 14px;border-radius:12px;background:var(--surface-2);border:1px solid var(--line);display:flex;flex-direction:column;gap:10px">
+            <label style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:13.5px;cursor:pointer">
+              <input type="checkbox" id="gpSemanalActivo" ${o.semanal_activo !== false ? 'checked' : ''} ${deshabilitado ? 'disabled' : ''}>
+              <span>📅 Reporte Semanal Consolidado</span>
+            </label>
+            <div class="field-row">
+              <div class="field">
+                <label for="gpSemanalDia">Día de la semana</label>
+                <select id="gpSemanalDia" ${deshabilitado ? 'disabled' : ''}>
+                  ${DIAS_SEM_NOMBRE.map((n, idx) => `<option value="${idx}" ${Number(o.semanal_dia ?? 1) === idx ? 'selected' : ''}>${n}</option>`).join('')}
+                </select>
+              </div>
+              <div class="field">
+                <label for="gpSemanalHora">Hora del reporte semanal</label>
+                <input type="time" id="gpSemanalHora" value="${esc(o.semanal_hora || '07:30')}" ${deshabilitado ? 'disabled' : ''}>
+              </div>
+            </div>
+          </div>
+
+          <div style="padding:13px 14px;border-radius:12px;background:var(--surface-2);border:1px solid var(--line);display:flex;flex-direction:column;gap:8px">
+            <div style="font-size:13.5px;font-weight:700;color:var(--ink)">👥 Destinatarios en GP Mensajes</div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+              <input type="checkbox" id="gpIncluirSupers" ${o.incluir_superadmins !== false ? 'checked' : ''} ${deshabilitado ? 'disabled' : ''}>
+              <span><strong>Todos los superadministradores</strong> ${supers.length ? `<span style="color:var(--muted)">(${supers.map((u) => `${esc(u.nombre)}${u.con_app ? ' 📱' : ''}`).join(', ')})</span>` : ''}</span>
+            </label>
+
+            <div style="font-size:12px;font-weight:700;color:var(--muted);margin-top:4px;text-transform:uppercase">Auxiliares (marca quiénes reciben el reporte):</div>
+            ${auxiliares.length ? `
+              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:7px">
+                ${auxiliares.map((u) => `
+                  <label style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;border-radius:9px;background:var(--surface);border:1px solid var(--line);font-size:12.5px;cursor:pointer">
+                    <span style="display:flex;align-items:center;gap:7px;min-width:0">
+                      <input type="checkbox" class="gp-aux-chk" value="${u.id}" ${auxSet.has(u.id) ? 'checked' : ''} ${deshabilitado ? 'disabled' : ''}>
+                      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><strong>${esc(u.nombre)}</strong> <span style="color:var(--muted)">(${esc(u.usuario)})</span></span>
+                    </span>
+                    ${u.con_app ? '<span class="pill ok" style="font-size:10.5px;padding:2px 6px">📱 App</span>' : '<span class="pill neutral" style="font-size:10.5px;padding:2px 6px">Correo</span>'}
+                  </label>
+                `).join('')}
+              </div>
+            ` : `<div style="font-size:12.5px;color:var(--muted)">No hay otros usuarios activos cargados todavía. Conecta como superadministrador para ver el listado completo.</div>`}
+
+            <div class="field" style="margin-top:6px">
+              <label for="gpCorreosExtra">Correos adicionales opcionales (uno por línea)</label>
+              <textarea id="gpCorreosExtra" rows="2" placeholder="auxiliar@tuempresa.com" ${deshabilitado ? 'disabled' : ''}>${esc((ag?.destinatarios?.auxiliares || []).join('\n'))}</textarea>
+            </div>
+            <div class="field">
+              <label for="gpUrlPortal">Enlace del botón dentro del mensaje</label>
+              <input type="url" id="gpUrlPortal" value="${esc(o.url_portal || 'https://implementacion.gespro.ai')}" ${deshabilitado ? 'disabled' : ''}>
+            </div>
+          </div>
+
+          <div style="display:flex;justify-content:flex-end;gap:8px">
+            <button type="submit" class="btn primary" id="btnGuardarGp" ${deshabilitado ? 'disabled' : ''}>💾 Guardar programación en GesPro</button>
+          </div>
+        </form>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:18px">
+        <div class="card" style="margin-bottom:0">
+          <div class="card-head">
+            <div>
+              <h2>Vista Previa del Mensaje</h2>
+              <p>Así llegará al buzón y notificación de GP Mensajes con los datos actuales.</p>
+            </div>
+            <div class="filter-group">
+              <button type="button" class="chip ${gp.vistaPreviaTipo === 'DIARIO' ? 'active' : ''}" data-gp-preview="DIARIO">Diario</button>
+              <button type="button" class="chip ${gp.vistaPreviaTipo === 'SEMANAL' ? 'active' : ''}" data-gp-preview="SEMANAL">Semanal</button>
+            </div>
+          </div>
+          <div style="border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface-2)">
+            <div style="padding:10px 14px;background:var(--navy);color:#fff;font-size:12.5px;display:flex;justify-content:space-between;align-items:center">
+              <span><strong>📱 GP Mensajes</strong> · Implementación y uso (GesPro Pulse)</span>
+              <span style="opacity:.8">${gp.vistaPreviaTipo === 'SEMANAL' ? 'Semanal' : 'Diario'}</span>
+            </div>
+            <div style="padding:14px">
+              <div style="font-weight:700;font-size:14px;color:var(--ink);margin-bottom:8px">${esc(preview.asunto)}</div>
+              <pre style="margin:0;white-space:pre-wrap;font-family:var(--font);font-size:12.5px;line-height:1.55;color:var(--ink-2)">${esc(preview.texto)}</pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:0">
+          <div class="card-head">
+            <div>
+              <h2>Bitácora de Envíos a GP Mensajes</h2>
+              <p>Últimos reportes diarios, semanales y manuales despachados por GesPro.</p>
+            </div>
+          </div>
+          ${gp.bitacora.length ? `
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr><th>Fecha</th><th>Tipo</th><th>Estado</th><th>Resumen</th></tr>
+                </thead>
+                <tbody>
+                  ${gp.bitacora.map((b) => `
+                    <tr>
+                      <td class="mono" style="font-size:12px;white-space:nowrap">${esc(String(b.inicio || '').slice(0, 16))}</td>
+                      <td><span class="pill info">${esc(b.motivo || 'MANUAL')}</span></td>
+                      <td><span class="pill ${b.resultado === 'OK' ? 'ok' : b.resultado === 'SIN_NOVEDAD' ? 'neutral' : 'danger'}">${esc(b.resultado)}</span></td>
+                      <td style="font-size:12.5px">${esc(b.resumen || '—')}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          ` : `<div class="empty-box" style="padding:20px">Todavía no hay envíos registrados para el agente de implementación.</div>`}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function bindGpMensajesEvents() {
+  document.querySelectorAll('[data-gp-preview]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.gpMensajes.vistaPreviaTipo = btn.dataset.gpPreview;
+      render();
+    });
+  });
+
+  document.getElementById('btnRecargarGp')?.addEventListener('click', () => { void cargarConfigGpMensajes(true); });
+  document.getElementById('btnRecargarGp2')?.addEventListener('click', () => { void cargarConfigGpMensajes(true); });
+
+  const disparar = async (tipo, btn) => {
+    if (!btn) return;
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ Enviando a GP Mensajes…';
+    try {
+      const res = await fetch('/api/gp-mensajes/enviar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tipo }),
+      });
+      const json = await leerJsonSeguro(res);
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      const avisos = json.app?.avisos ? ` · Push a ${json.app.avisos} teléfono(s)` : (json.app?.guardados ? ` · En buzón de ${json.app.para?.join(', ')}` : '');
+      toast(`✓ ${json.resumen || 'Reporte enviado'}${avisos}`);
+      await cargarConfigGpMensajes(true);
+    } catch (err) {
+      toast(mensajeErrorRed(err));
+      btn.disabled = false;
+      btn.textContent = orig;
+    }
+  };
+
+  document.getElementById('btnEnviarDiarioGp')?.addEventListener('click', (e) => { void disparar('DIARIO', e.currentTarget); });
+  document.getElementById('btnEnviarSemanalGp')?.addEventListener('click', (e) => { void disparar('SEMANAL', e.currentTarget); });
+
+  document.getElementById('formGpMensajes')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('btnGuardarGp');
+    btn.disabled = true;
+    btn.textContent = '⏳ Guardando…';
+    try {
+      const auxiliares = [...document.querySelectorAll('.gp-aux-chk:checked')].map((c) => Number(c.value)).filter(Boolean);
+      const correos_extra = document.getElementById('gpCorreosExtra').value.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+      const payload = {
+        activo: document.getElementById('gpActivo').checked,
+        solo_habiles: document.getElementById('gpSoloHabiles').checked,
+        correos_extra,
+        opciones: {
+          diario_activo: document.getElementById('gpDiarioActivo').checked,
+          diario_hora: document.getElementById('gpDiarioHora').value || '08:00',
+          semanal_activo: document.getElementById('gpSemanalActivo').checked,
+          semanal_dia: Number(document.getElementById('gpSemanalDia').value || 1),
+          semanal_hora: document.getElementById('gpSemanalHora').value || '07:30',
+          incluir_superadmins: document.getElementById('gpIncluirSupers').checked,
+          auxiliares,
+          dias_alerta_inactiva: Number(document.getElementById('gpDiasInact').value || 5),
+          url_portal: document.getElementById('gpUrlPortal').value.trim() || 'https://implementacion.gespro.ai',
+        },
+      };
+      const res = await fetch('/api/gp-mensajes/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const json = await leerJsonSeguro(res);
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      toast('✓ Programación de GP Mensajes guardada en GesPro');
+      await cargarConfigGpMensajes(true);
+    } catch (err) {
+      toast(mensajeErrorRed(err));
+      btn.disabled = false;
+      btn.textContent = '💾 Guardar programación en GesPro';
+    }
+  });
+}
+
 /* ---------------- Render Principal & Delegación de Eventos ---------------- */
 function render() {
   renderChrome();
@@ -2283,6 +2651,13 @@ function render() {
   else if (state.tab === 'uso') app.innerHTML = renderUso(emp, m);
   else if (state.tab === 'salud') app.innerHTML = renderSalud(emp, m);
   else if (state.tab === 'portafolio') app.innerHTML = renderPortafolio(emp);
+  else if (state.tab === 'gpmensajes') {
+    app.innerHTML = renderGpMensajes();
+    bindGpMensajesEvents();
+    if (state.servidorVivo && !state.gpMensajes.cargado && !state.gpMensajes.cargando) {
+      void cargarConfigGpMensajes(false);
+    }
+  }
 
   bindChartTooltips(emp);
   bindViewEvents(emp);
