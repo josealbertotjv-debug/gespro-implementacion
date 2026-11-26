@@ -606,7 +606,9 @@ async function sincronizarGesPro(req, res) {
 
     const latenciaMs = Math.max(1, Date.now() - t0);
 
-    const esSuperadmin = !!authResp.data?.usuario?.superadmin;
+    const esSuperadmin = authResp.data?.usuario?.superadmin_principal !== undefined
+      ? !!authResp.data.usuario.superadmin_principal
+      : !!authResp.data?.usuario?.superadmin;
     let mantenerSesionSuper = false;
 
     try {
